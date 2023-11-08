@@ -189,8 +189,11 @@ public abstract class JenkinsDownload : PluginApiDownload() {
   @get:Input @get:Optional
   public abstract val build: Property<String>
 
+  @get:Input @get:Optional
+  public abstract val auth: Property<String>
+
   override fun toString(): String {
-    return "JenkinsDownload(baseUrl=$baseUrl, job=$job, artifactRegex=$artifactRegex, build=$build)"
+    return "JenkinsDownload(baseUrl=$baseUrl, job=$job, artifactRegex=$artifactRegex, build=$build, auth=$auth)"
   }
 
   override fun equals(other: Any?): Boolean {
@@ -206,7 +209,8 @@ public abstract class JenkinsDownload : PluginApiDownload() {
     return baseUrl.get() == other.baseUrl.get() &&
       job.get() == other.job.get() &&
       artifactRegex.orNull == other.artifactRegex.orNull &&
-      build.orNull == other.build.orNull
+      build.orNull == other.build.orNull &&
+      auth.orNull == other.auth.orNull
   }
 
   override fun hashCode(): Int {
@@ -214,6 +218,7 @@ public abstract class JenkinsDownload : PluginApiDownload() {
     result = 31 * result + job.hashCode()
     result = 31 * result + artifactRegex.hashCode()
     result = 31 * result + build.hashCode()
+    result = 31 * result + auth.hashCode()
     return result
   }
 }

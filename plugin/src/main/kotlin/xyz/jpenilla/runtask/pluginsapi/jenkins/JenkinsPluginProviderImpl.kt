@@ -27,7 +27,7 @@ public abstract class JenkinsPluginProviderImpl @Inject constructor(private val 
 
   override fun getName(): String = name
 
-  override fun add(baseUrl: String, job: String, artifactRegex: Regex?, build: String?) {
+  override fun add(baseUrl: String, job: String, artifactRegex: Regex?, build: String?, auth: String?) {
     val download = objects.newInstance(JenkinsDownload::class)
     download.baseUrl.set(baseUrl)
     download.job.set(job)
@@ -37,6 +37,7 @@ public abstract class JenkinsPluginProviderImpl @Inject constructor(private val 
     if (build != null) {
       download.build.set(build)
     }
+    if (auth != null) download.auth.set(auth)
     jobs += download
   }
 

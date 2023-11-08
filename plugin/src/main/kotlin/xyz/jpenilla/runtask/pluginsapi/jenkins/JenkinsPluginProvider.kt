@@ -31,6 +31,7 @@ public interface JenkinsPluginProvider : PluginApi<JenkinsPluginProvider, Jenkin
    * @param job The id of the target job to download the plugin from
    * @param artifactRegex In case multiple artifacts are provided, a regex to pick the correct artifact
    * @param build A specific build for the [job] or the lastSuccessfulBuild if none provided
+   * @param auth The Auth string, 'username:token', to use if authentication is required
    */
-  public fun add(baseUrl: String, job: String, artifactRegex: Regex? = null, build: String? = null)
+  public fun add(baseUrl: String, job: String, artifactRegex: Regex? = null, build: String? = null, auth: String? = null)
 }

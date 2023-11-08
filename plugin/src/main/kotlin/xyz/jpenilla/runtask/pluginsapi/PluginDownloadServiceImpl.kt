@@ -23,25 +23,28 @@ import com.fasterxml.jackson.module.kotlin.kotlinModule
 import com.fasterxml.jackson.module.kotlin.readValue
 import org.gradle.api.Project
 import org.gradle.api.logging.Logging
-import xyz.jpenilla.runtask.util.Constants
-import xyz.jpenilla.runtask.util.Downloader
-import xyz.jpenilla.runtask.util.HashingAlgorithm
-import xyz.jpenilla.runtask.util.calculateHash
-import xyz.jpenilla.runtask.util.path
-import xyz.jpenilla.runtask.util.prettyPrint
-import xyz.jpenilla.runtask.util.toHexString
+import xyz.jpenilla.runtask.util.*
+import java.io.BufferedReader
+import java.io.InputStreamReader
 import java.net.HttpURLConnection
 import java.net.URI
+import java.net.URL
 import java.nio.file.Path
 import java.time.Duration
 import java.time.Instant
-import java.util.Locale
-import kotlin.io.path.bufferedReader
-import kotlin.io.path.bufferedWriter
-import kotlin.io.path.createDirectories
-import kotlin.io.path.deleteExisting
-import kotlin.io.path.isDirectory
-import kotlin.io.path.isRegularFile
+import java.util.*
+import kotlin.collections.HashMap
+import kotlin.collections.List
+import kotlin.collections.Map
+import kotlin.collections.MutableMap
+import kotlin.collections.find
+import kotlin.collections.first
+import kotlin.collections.firstOrNull
+import kotlin.collections.joinToString
+import kotlin.collections.map
+import kotlin.collections.set
+import kotlin.io.path.*
+
 
 internal abstract class PluginDownloadServiceImpl : PluginDownloadService {
 
@@ -105,23 +108,45 @@ internal abstract class PluginDownloadServiceImpl : PluginDownloadService {
     val version = manifest.urlProvider[urlHash] ?: PluginVersion(fileName = "$urlHash.jar", displayName = download.url.get())
     val targetFile = targetDir.resolve(version.fileName)
     val setter: (PluginVersion) -> Unit = { manifest.urlProvider[urlHash] = it }
-    val ctx = DownloadCtx(project, "url", { download.url.get() }, targetDir, targetFile, version, setter)
+    val ctx = DownloadCtx(project, "url", { download.url.get() }, targetDir, targetFile, version, setter, null)
     return download(ctx)
   }
 
   private fun resolveJenkins(project: Project, download: JenkinsDownload): Path {
+    fun makeJenkinsURLRequest(path: String, auth: String? = null): String {
+      val url = URL(path)
+      val conn = url.openConnection() as HttpURLConnection
+      conn.requestMethod = "GET"
+      if (auth != null) conn.setRequestProperty("Authorization", "Basic $auth")
+      conn.connect()
+      if (conn.responseCode != HttpURLConnection.HTTP_OK) throw Exception("Failed to make jenkins request got a: ${conn.responseCode} ${conn.responseMessage}")
+      val input = BufferedReader(InputStreamReader(conn.inputStream))
+
+      val response = buildString {
+        var inputLine: String
+        while (input.readLine().also { inputLine = it } != null) {
+          append(inputLine)
+        }
+      }
+      //close everything
+      input.close()
+      conn.disconnect()
+
+      return response
+    }
+
     val cacheDir = parameters.cacheDirectory.get().asFile.toPath()
     val targetDir = cacheDir.resolve(Constants.JENKINS_PLUGIN_DIR)
 
     val baseUrl = download.baseUrl.get().trimEnd('/')
     val job = download.job.get()
     val regex = download.artifactRegex.orNull
+    val auth = download.auth.orNull
     val jobUrl = "$baseUrl/job/$job"
     val build = download.build.getOrElse(
-      URI("$jobUrl/${Constants.JENKINS_LAST_SUCCESSFUL_BUILD}/buildNumber")
-        .toURL().readText()
+      makeJenkinsURLRequest("$jobUrl/${Constants.JENKINS_LAST_SUCCESSFUL_BUILD}/buildNumber", auth)
     )
-    val restEndpoint = URI(Constants.JENKINS_REST_ENDPOINT.format(jobUrl, build))
+    val restEndpoint = Constants.JENKINS_REST_ENDPOINT.format(jobUrl, build)
 
     val provider = manifest.jenkinsProvider.computeIfAbsent(baseUrl) { JenkinsProvider() }
     val versions = provider.computeIfAbsent(job) { PluginVersions() }
@@ -134,7 +159,7 @@ internal abstract class PluginDownloadServiceImpl : PluginDownloadService {
     val setter: (PluginVersion) -> Unit = { versions[build] = it }
 
     val downloadUrlSupplier: () -> String = supplier@{
-      val artifacts = mapper.readValue<JenkinsBuildResponse>(restEndpoint.toURL()).artifacts
+      val artifacts = mapper.readValue<JenkinsBuildResponse>(makeJenkinsURLRequest(restEndpoint,auth)).artifacts
       if (artifacts.isEmpty()) {
         throw IllegalStateException("No artifacts provided for build $build at $jobUrl")
       }
@@ -152,7 +177,7 @@ internal abstract class PluginDownloadServiceImpl : PluginDownloadService {
       val artifact = artifactPaths.firstOrNull { regex.containsMatchIn(it) } ?: throw NullPointerException("Failed to find artifact for regex ($regex) - Artifacts are: ${artifactPaths.joinToString(", ")}")
       "$jobUrl/$build/artifact/$artifact"
     }
-    val ctx = DownloadCtx(project, jobUrl, downloadUrlSupplier, targetDir, targetFile, version, setter)
+    val ctx = DownloadCtx(project, jobUrl, downloadUrlSupplier, targetDir, targetFile, version, setter, auth)
     return download(ctx)
   }
 
@@ -178,7 +203,7 @@ internal abstract class PluginDownloadServiceImpl : PluginDownloadService {
     val downloadUrl = "$apiUrl/api/v1/projects/$apiPlugin/versions/$apiVersion/$platformType/download"
 
     val setter: (PluginVersion) -> Unit = { platform[apiVersion] = it }
-    val ctx = DownloadCtx(project, apiUrl, { downloadUrl }, targetDir, targetFile, version, setter)
+    val ctx = DownloadCtx(project, apiUrl, { downloadUrl }, targetDir, targetFile, version, setter, null)
     return download(ctx)
   }
 
@@ -200,7 +225,7 @@ internal abstract class PluginDownloadServiceImpl : PluginDownloadService {
 
     val versionRequestUrl = "$apiUrl/v2/project/$apiPlugin/version/$apiVersion"
     val versionJsonPath = download(
-      DownloadCtx(project, apiUrl, { versionRequestUrl }, targetDir, jsonFile, jsonVersion, setter = { plugin[jsonVersionName] = it })
+      DownloadCtx(project, apiUrl, { versionRequestUrl }, targetDir, jsonFile, jsonVersion, setter = { plugin[jsonVersionName] = it }, null)
     )
     val versionInfo = mapper.readValue<ModrinthVersionResponse>(versionJsonPath.toFile())
     val primaryFile = versionInfo.files.find { it.primary } ?: error("Could not find primary file for $download in $versionInfo")
@@ -213,7 +238,7 @@ internal abstract class PluginDownloadServiceImpl : PluginDownloadService {
     val targetFile = targetDir.resolve(version.fileName)
 
     return download(
-      DownloadCtx(project, apiUrl, { primaryFile.url }, targetDir, targetFile, version, setter = { plugin[apiVersion] = it })
+      DownloadCtx(project, apiUrl, { primaryFile.url }, targetDir, targetFile, version, setter = { plugin[apiVersion] = it }, null)
     )
   }
 
@@ -236,7 +261,7 @@ internal abstract class PluginDownloadServiceImpl : PluginDownloadService {
     val downloadUrl = "https://github.com/$owner/$repo/releases/download/$tag/$asset"
 
     val setter: (PluginVersion) -> Unit = { tagProvider[asset] = it }
-    val ctx = DownloadCtx(project, "github.com", { downloadUrl }, targetDir, targetFile, version, setter)
+    val ctx = DownloadCtx(project, "github.com", { downloadUrl }, targetDir, targetFile, version, setter, null)
     return download(ctx)
   }
 
@@ -271,6 +296,8 @@ internal abstract class PluginDownloadServiceImpl : PluginDownloadService {
     try {
       connection.instanceFollowRedirects = true
       connection.setRequestProperty("Accept", "application/octet-stream")
+
+      if (ctx.auth != null) connection.setRequestProperty("Authorization", ctx.auth)
 
       if (ctx.targetFile.isRegularFile()) {
         if (ctx.version.lastUpdateCheck > 0 && ctx.version.hash?.check(ctx.targetFile) != false) {
@@ -329,7 +356,8 @@ internal abstract class PluginDownloadServiceImpl : PluginDownloadService {
     val targetDir: Path,
     val targetFile: Path,
     val version: PluginVersion,
-    val setter: (PluginVersion) -> Unit
+    val setter: (PluginVersion) -> Unit,
+    val auth: String?
   )
 }
 
